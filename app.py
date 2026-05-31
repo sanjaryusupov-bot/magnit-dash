@@ -28,6 +28,7 @@ st.markdown("""
         box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         text-align: center;
         transition: transform 0.3s;
+        cursor: pointer;
     }
     .stat-card:hover {
         transform: translateY(-5px);
@@ -67,11 +68,13 @@ needed_columns = [
 existing_columns = [col for col in needed_columns if col in df.columns]
 df = df[existing_columns]
 
-# Фильтр: только заказы с 25 мая 2026
+# Конвертируем даты
 if 'Дата отгрузки план' in df.columns:
     df['План дата'] = pd.to_datetime(df['Дата отгрузки план'], errors='coerce')
-    cutoff_date = datetime(2026, 5, 25)
-    df = df[df['План дата'] >= cutoff_date]
+
+# Фильтр: только заказы с 25 мая 2026
+cutoff_date = datetime(2026, 5, 25)
+df = df[df['План дата'] >= cutoff_date]
 
 # Маппинг статусов
 status_display = {
@@ -92,11 +95,13 @@ if 'Статус WMS' in df.columns:
 if 'кол-во штук в заказе' in df.columns:
     df['кол-во штук в заказе'] = pd.to_numeric(df['кол-во штук в заказе'], errors='coerce').fillna(0)
 
-# Простая метрика доставки
-if 'Статус отгрузки на хаб' in df.columns:
-    df['Доставлен'] = df['Статус отгрузки на хаб'].apply(
-        lambda x: '✅ Доставлен' if pd.notna(x) and 'отгружен' in str(x).lower() else '🔄 В процессе'
-    )
+# Определяем доставку: если статус WMS "Доставляется", то доставлено
+df['Доставлен'] = df['Статус отображение'].apply(
+    lambda x: '✅ Доставлен' if x == '🚚 Доставляется' else '🔄 В процессе'
+)
+
+# Факт отгрузки = сегодняшняя дата для доставленных
+df['Факт отгрузки'] = datetime.now().date() if 'Доставлен' in df.columns else None
 
 # Заголовок
 st.markdown("""
@@ -126,21 +131,23 @@ with st.sidebar:
         selected_city = st.selectbox("🏙️ Город", cities)
         if selected_city != 'Все города':
             df_filtered = df_filtered[df_filtered['Город'] == selected_city]
-    
-    if len(df_filtered) > 0 and 'Статус отображение' in df_filtered.columns:
-        statuses = ['Все статусы'] + sorted(df_filtered['Статус отображение'].dropna().unique().tolist())
-        selected_status = st.selectbox("📊 Статус заказа", statuses)
-        if selected_status != 'Все статусы':
-            df_filtered = df_filtered[df_filtered['Статус отображение'] == selected_status]
 
 if len(df_filtered) == 0:
     st.warning("⚠️ Нет данных для отображения")
     st.stop()
 
-# ==================== СТАТУСЫ ЗАКАЗОВ (ГЛАВНОЕ) ====================
+# Фильтр по дате (сегодня)
+today = datetime.now().date()
+df_today = df_filtered[df_filtered['План дата'].dt.date == today]
+
+# ==================== СТАТУСЫ ЗАКАЗОВ С ВОЗМОЖНОСТЬЮ ПРОВАЛА ====================
 st.markdown("## 📊 Статусы заказов")
 
 status_counts = df_filtered['Статус отображение'].value_counts()
+
+# Инициализируем состояние для выбранного статуса
+if 'selected_status' not in st.session_state:
+    st.session_state.selected_status = None
 
 # Создаем карточки для каждого статуса
 num_statuses = len(status_counts)
@@ -149,67 +156,89 @@ if num_statuses > 0:
     for idx, (status, count) in enumerate(status_counts.items()):
         if idx < 6:
             with cols[idx]:
-                # Эмодзи для статуса
                 emoji = status.split()[0] if status else "📦"
-                st.markdown(f"""
-                <div class="stat-card">
-                    <div style="font-size: 48px;">{emoji}</div>
-                    <div class="metric-value">{count}</div>
-                    <div class="metric-label">{status}</div>
-                </div>
-                """, unsafe_allow_html=True)
+                # Делаем карточку кликабельной
+                if st.button(
+                    f"{emoji}\n\n{count}\n\n{status}", 
+                    key=f"status_{status}",
+                    use_container_width=True
+                ):
+                    st.session_state.selected_status = status
+                    st.rerun()
 
-st.markdown("---")
+# Отображаем детали выбранного статуса
+if st.session_state.selected_status:
+    st.markdown(f"### 📋 Заказы со статусом: {st.session_state.selected_status}")
+    
+    # Фильтруем заказы по выбранному статусу
+    status_orders = df_filtered[df_filtered['Статус отображение'] == st.session_state.selected_status]
+    
+    # Подготовка таблицы
+    status_table = status_orders.copy()
+    status_table['План отгрузки'] = status_table['План дата'].dt.strftime('%d.%m.%Y')
+    status_table['Факт отгрузки'] = datetime.now().strftime('%d.%m.%Y') if st.session_state.selected_status == "🚚 Доставляется" else "—"
+    
+    # Выбираем колонки
+    detail_cols = ['№ заказа', 'Название магазина', 'Город', 'кол-во штук в заказе', 
+                   'План отгрузки', 'Факт отгрузки', 'Доставлен']
+    detail_names = ['№ заказа', 'Магазин', 'Город', 'Кол-во товаров', 
+                    'План отгрузки', 'Факт отгрузки', 'Доставка']
+    
+    detail_display = pd.DataFrame()
+    for col, name in zip(detail_cols, detail_names):
+        if col in status_table.columns:
+            detail_display[name] = status_table[col]
+    
+    st.dataframe(detail_display, use_container_width=True, height=400)
+    
+    # Кнопка закрытия
+    if st.button("✖️ Закрыть детали"):
+        st.session_state.selected_status = None
+        st.rerun()
+    
+    st.markdown("---")
 
-# ==================== КЛЮЧЕВЫЕ МЕТРИКИ ====================
-st.markdown("## 📈 Общая статистика")
+# ==================== ОБЩАЯ СТАТИСТИКА ЗА СЕГОДНЯ ====================
+st.markdown("## 📈 Общая статистика за сегодня")
 
 col1, col2, col3, col4, col5 = st.columns(5)
 
 with col1:
-    st.metric("📦 Всего заказов", len(df_filtered))
+    st.metric("📦 Заказов сегодня", len(df_today))
 
 with col2:
-    total_items = int(df_filtered['кол-во штук в заказе'].sum())
-    st.metric("📦 Всего товаров", f"{total_items:,}".replace(',', ' '))
+    total_items_today = int(df_today['кол-во штук в заказе'].sum())
+    st.metric("📦 Товаров сегодня", f"{total_items_today:,}".replace(',', ' '))
 
 with col3:
-    in_delivery = len(df_filtered[df_filtered['Статус отображение'] == "🚚 Доставляется"])
-    st.metric("🚚 В доставке", in_delivery)
+    in_delivery_today = len(df_today[df_today['Статус отображение'] == "🚚 Доставляется"])
+    st.metric("🚚 В доставке", in_delivery_today)
 
 with col4:
-    if 'Доставлен' in df_filtered.columns:
-        delivered = len(df_filtered[df_filtered['Доставлен'] == "✅ Доставлен"])
-        st.metric("✅ Доставлено", delivered)
+    delivered_today = len(df_today[df_today['Доставлен'] == "✅ Доставлен"])
+    st.metric("✅ Доставлено", delivered_today)
 
 with col5:
-    picking = len(df_filtered[df_filtered['Статус отображение'].isin(["⏳ Подбирается", "🔄 Сортируется", "📍 В очереди"])])
-    st.metric("⏳ В работе", picking)
+    picking_today = len(df_today[df_today['Статус отображение'].isin(["⏳ Подбирается", "🔄 Сортируется", "📍 В очереди"])])
+    st.metric("⏳ В работе", picking_today)
 
 st.markdown("---")
 
 # ==================== ДЕТАЛЬНАЯ ТАБЛИЦА ЗАКАЗОВ ====================
-st.markdown("## 📋 Детальная информация по заказам")
+st.markdown("## 📋 Все заказы")
 
 # Подготовка данных для таблицы
 df_table = df_filtered.copy()
-
-# Форматируем даты безопасно
-if 'План дата' in df_table.columns:
-    df_table['План отгрузки'] = df_table['План дата'].dt.strftime('%d.%m.%Y')
-else:
-    df_table['План отгрузки'] = '—'
-
-# Добавляем пустую колонку для факта
-df_table['Факт отгрузки'] = '—'
+df_table['План отгрузки'] = df_table['План дата'].dt.strftime('%d.%m.%Y')
+df_table['Факт отгрузки'] = datetime.now().strftime('%d.%m.%Y')
 df_table['Статус заказа'] = df_table['Статус отображение']
 
 # Выбираем колонки для отображения
 display_cols = ['№ заказа', 'Название магазина', 'Город', 'кол-во штук в заказе', 
-                'План отгрузки', 'Факт отгрузки', 'Статус заказа', 'Статус сборки', 'Доставлен']
+                'План отгрузки', 'Факт отгрузки', 'Статус заказа', 'Доставлен']
 
 display_names = ['№ заказа', 'Магазин', 'Город', 'Кол-во товаров', 
-                 'План отгрузки', 'Факт отгрузки', 'Статус WMS', 'Статус сборки', 'Доставка']
+                 'План отгрузки', 'Факт отгрузки', 'Статус WMS', 'Доставка']
 
 df_display = pd.DataFrame()
 for col, name in zip(display_cols, display_names):
@@ -223,33 +252,6 @@ if search:
 
 # Отображаем таблицу
 st.dataframe(df_display, use_container_width=True, height=500)
-
-# ==================== СТАТУСЫ СБОРКИ ====================
-if 'Статус сборки' in df_filtered.columns:
-    st.markdown("---")
-    st.markdown("## 🔧 Статусы сборки")
-    
-    col_assembly1, col_assembly2 = st.columns(2)
-    
-    with col_assembly1:
-        assembly_stats = df_filtered['Статус сборки'].value_counts()
-        if len(assembly_stats) > 0:
-            fig_assembly = px.pie(values=assembly_stats.values, 
-                                   names=assembly_stats.index,
-                                   title="Распределение по статусам сборки",
-                                   hole=0.3)
-            fig_assembly.update_traces(textposition='inside', textinfo='percent+label')
-            st.plotly_chart(fig_assembly, use_container_width=True)
-    
-    with col_assembly2:
-        # Топ статусов сборки
-        st.markdown("### Статусы сборки")
-        assembly_df = pd.DataFrame({
-            'Статус сборки': assembly_stats.index,
-            'Количество': assembly_stats.values,
-            '%': (assembly_stats.values / len(df_filtered) * 100).round(1)
-        })
-        st.dataframe(assembly_df, use_container_width=True, hide_index=True)
 
 # ==================== ЭКСПОРТ ДАННЫХ ====================
 with st.expander("📥 Экспорт данных"):
