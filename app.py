@@ -45,13 +45,6 @@ st.markdown("""
         color: #666;
         margin-top: 5px;
     }
-    .status-badge {
-        display: inline-block;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-size: 13px;
-        font-weight: 500;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -99,20 +92,11 @@ if 'Статус WMS' in df.columns:
 if 'кол-во штук в заказе' in df.columns:
     df['кол-во штук в заказе'] = pd.to_numeric(df['кол-во штук в заказе'], errors='coerce').fillna(0)
 
-# Простая SLA метрика (план vs факт)
+# Простая метрика доставки
 if 'Статус отгрузки на хаб' in df.columns:
     df['Доставлен'] = df['Статус отгрузки на хаб'].apply(
         lambda x: '✅ Доставлен' if pd.notna(x) and 'отгружен' in str(x).lower() else '🔄 В процессе'
     )
-    
-    # Факт отгрузки (если доставлен - ставим вчерашнюю дату)
-    df['Факт отгрузки'] = None
-    for idx, row in df.iterrows():
-        if row['Доставлен'] == '✅ Доставлен':
-            df.at[idx, 'Факт отгрузки'] = datetime.now() - timedelta(days=1)
-    
-    # Расчет простого SLA (в срок или нет)
-    df['SLA'] = df.apply(lambda row: '✅ В срок' if row['Доставлен'] == '✅ Доставлен' else '🟡 В работе', axis=1)
 
 # Заголовок
 st.markdown("""
@@ -204,65 +188,20 @@ with col5:
 
 st.markdown("---")
 
-# ==================== СРАВНЕНИЕ МАГАЗИНОВ (ПРОСТАЯ SLA) ====================
-st.markdown("## 🏪 Сравнение магазинов по доставке")
-
-if 'Название магазина' in df_filtered.columns and 'Доставлен' in df_filtered.columns:
-    shop_stats = df_filtered.groupby('Название магазина').agg({
-        '№ заказа': 'count',
-        'кол-во штук в заказе': 'sum',
-        'Доставлен': lambda x: (x == "✅ Доставлен").sum()
-    }).round(0)
-    
-    shop_stats.columns = ['Заказов', 'Товаров', 'Доставлено']
-    shop_stats['Осталось'] = shop_stats['Заказов'] - shop_stats['Доставлено']
-    shop_stats['Доставлено %'] = (shop_stats['Доставлено'] / shop_stats['Заказов'] * 100).round(1)
-    shop_stats = shop_stats.sort_values('Доставлено %', ascending=False)
-    
-    col_shop1, col_shop2 = st.columns(2)
-    
-    with col_shop1:
-        # График доставки по магазинам
-        fig_delivery = px.bar(shop_stats.head(15), 
-                               x='Доставлено %', 
-                               y=shop_stats.head(15).index,
-                               orientation='h',
-                               title="Доставка по магазинам (%)",
-                               text='Доставлено %',
-                               color='Доставлено %',
-                               color_continuous_scale='RdYlGn',
-                               range_color=[0, 100])
-        fig_delivery.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
-        fig_delivery.update_layout(height=500, xaxis_title="Доставлено %")
-        st.plotly_chart(fig_delivery, use_container_width=True)
-    
-    with col_shop2:
-        # Количество товаров по магазинам
-        fig_items = px.bar(shop_stats.head(15),
-                           x='Товаров',
-                           y=shop_stats.head(15).index,
-                           orientation='h',
-                           title="Количество товаров по магазинам",
-                           text='Товаров',
-                           color='Товаров',
-                           color_continuous_scale='Blues')
-        fig_items.update_traces(texttemplate='%{text}', textposition='outside')
-        fig_items.update_layout(height=500)
-        st.plotly_chart(fig_items, use_container_width=True)
-    
-    # Таблица с данными
-    st.markdown("### 📊 Детальная статистика по магазинам")
-    st.dataframe(shop_stats, use_container_width=True)
-
-st.markdown("---")
-
 # ==================== ДЕТАЛЬНАЯ ТАБЛИЦА ЗАКАЗОВ ====================
 st.markdown("## 📋 Детальная информация по заказам")
 
 # Подготовка данных для таблицы
 df_table = df_filtered.copy()
-df_table['План отгрузки'] = df_table['План дата'].dt.strftime('%d.%m.%Y') if 'План дата' in df_table else '—'
-df_table['Факт отгрузки'] = df_table['Факт отгрузки'].dt.strftime('%d.%m.%Y') if 'Факт отгрузки' in df_table else '—'
+
+# Форматируем даты безопасно
+if 'План дата' in df_table.columns:
+    df_table['План отгрузки'] = df_table['План дата'].dt.strftime('%d.%m.%Y')
+else:
+    df_table['План отгрузки'] = '—'
+
+# Добавляем пустую колонку для факта
+df_table['Факт отгрузки'] = '—'
 df_table['Статус заказа'] = df_table['Статус отображение']
 
 # Выбираем колонки для отображения
@@ -303,11 +242,14 @@ if 'Статус сборки' in df_filtered.columns:
             st.plotly_chart(fig_assembly, use_container_width=True)
     
     with col_assembly2:
-        # Статусы сборки по магазинам
-        assembly_by_shop = df_filtered.groupby('Название магазина')['Статус сборки'].value_counts().unstack().fillna(0)
-        if len(assembly_by_shop) > 0:
-            st.markdown("### Статусы сборки по магазинам")
-            st.dataframe(assembly_by_shop.head(15), use_container_width=True)
+        # Топ статусов сборки
+        st.markdown("### Статусы сборки")
+        assembly_df = pd.DataFrame({
+            'Статус сборки': assembly_stats.index,
+            'Количество': assembly_stats.values,
+            '%': (assembly_stats.values / len(df_filtered) * 100).round(1)
+        })
+        st.dataframe(assembly_df, use_container_width=True, hide_index=True)
 
 # ==================== ЭКСПОРТ ДАННЫХ ====================
 with st.expander("📥 Экспорт данных"):
