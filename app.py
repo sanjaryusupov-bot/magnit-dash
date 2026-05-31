@@ -59,6 +59,11 @@ if 'Статус WMS' in df.columns:
     # Удаляем строки с другими статусами
     df = df[df['Статус отображение'].notna()]
 
+# Преобразуем колонку с количеством товаров в числа
+if 'кол-во штук в заказе' in df.columns:
+    # Заменяем запятые на точки и конвертируем в число
+    df['кол-во штук в заказе'] = pd.to_numeric(df['кол-во штук в заказе'], errors='coerce').fillna(0)
+
 # Заголовок
 st.title("📦 WMS Dashboard")
 st.markdown("---")
@@ -67,7 +72,7 @@ st.markdown("---")
 with st.sidebar:
     st.header("🔍 Фильтры")
     
-    if 'Название магазина' in df.columns:
+    if 'Название магазина' in df.columns and len(df) > 0:
         shops = ['Все магазины'] + sorted(df['Название магазина'].dropna().unique().tolist())
         selected_shop = st.selectbox("🏬 Выберите магазин", shops)
         
@@ -79,19 +84,25 @@ with st.sidebar:
         df_filtered = df.copy()
         selected_shop = 'Все магазины'
     
-    if 'Город' in df_filtered.columns:
-        cities = ['Все города'] + sorted(df_filtered['Город'].dropna().unique().tolist())
-        selected_city = st.selectbox("🏙️ Город", cities)
+    if len(df_filtered) > 0:
+        if 'Город' in df_filtered.columns:
+            cities = ['Все города'] + sorted(df_filtered['Город'].dropna().unique().tolist())
+            selected_city = st.selectbox("🏙️ Город", cities)
+            
+            if selected_city != 'Все города':
+                df_filtered = df_filtered[df_filtered['Город'] == selected_city]
         
-        if selected_city != 'Все города':
-            df_filtered = df_filtered[df_filtered['Город'] == selected_city]
-    
-    if 'Статус отображение' in df_filtered.columns:
-        statuses = ['Все статусы'] + sorted(df_filtered['Статус отображение'].dropna().unique().tolist())
-        selected_status = st.selectbox("📊 Статус", statuses)
-        
-        if selected_status != 'Все статусы':
-            df_filtered = df_filtered[df_filtered['Статус отображение'] == selected_status]
+        if 'Статус отображение' in df_filtered.columns:
+            statuses = ['Все статусы'] + sorted(df_filtered['Статус отображение'].dropna().unique().tolist())
+            selected_status = st.selectbox("📊 Статус", statuses)
+            
+            if selected_status != 'Все статусы':
+                df_filtered = df_filtered[df_filtered['Статус отображение'] == selected_status]
+
+# Проверяем, есть ли данные после фильтрации
+if len(df_filtered) == 0:
+    st.warning("⚠️ Нет данных для отображения")
+    st.stop()
 
 # Метрики
 st.subheader("📈 Ключевые показатели")
@@ -123,15 +134,17 @@ if 'Статус отображение' in df_filtered.columns:
     status_counts = df_filtered['Статус отображение'].value_counts()
     
     # Отображаем статусы в виде цветных карточек
-    cols = st.columns(min(len(status_counts), 6))
-    for idx, (status, count) in enumerate(status_counts.items()):
-        with cols[idx % 6]:
-            st.markdown(f"""
-            <div style="background-color: #f8f9fa; padding: 15px; border-radius: 10px; text-align: center; margin: 5px;">
-                <div style="font-size: 28px; font-weight: bold;">{count}</div>
-                <div style="font-size: 14px; color: #666;">{status}</div>
-            </div>
-            """, unsafe_allow_html=True)
+    num_statuses = len(status_counts)
+    if num_statuses > 0:
+        cols = st.columns(min(num_statuses, 6))
+        for idx, (status, count) in enumerate(status_counts.items()):
+            with cols[idx % 6]:
+                st.markdown(f"""
+                <div style="background-color: #f8f9fa; padding: 15px; border-radius: 10px; text-align: center; margin: 5px;">
+                    <div style="font-size: 28px; font-weight: bold;">{count}</div>
+                    <div style="font-size: 14px; color: #666;">{status}</div>
+                </div>
+                """, unsafe_allow_html=True)
 
 # Статистика по городам
 st.markdown("---")
@@ -195,11 +208,12 @@ with st.expander("📊 Детальная статистика"):
     
     with col_stat3:
         if 'кол-во штук в заказе' in df_filtered.columns:
+            items = df_filtered['кол-во штук в заказе']
             st.write("**📦 Статистика по товарам:**")
-            st.write(f"- Среднее: {df_filtered['кол-во штук в заказе'].mean():.0f} шт")
-            st.write(f"- Медиана: {df_filtered['кол-во штук в заказе'].median():.0f} шт")
-            st.write(f"- Максимум: {df_filtered['кол-во штук в заказе'].max():.0f} шт")
-            st.write(f"- Минимум: {df_filtered['кол-во штук в заказе'].min():.0f} шт")
+            st.write(f"- Среднее: {items.mean():.0f} шт")
+            st.write(f"- Медиана: {items.median():.0f} шт")
+            st.write(f"- Максимум: {items.max():.0f} шт")
+            st.write(f"- Минимум: {items.min():.0f} шт")
 
 # Информация об обновлении
 st.markdown("---")
