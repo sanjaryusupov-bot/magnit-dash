@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 import plotly.express as px
-import base64
 
 ORDERS_URL = "https://docs.google.com/spreadsheets/d/12CxJMCBUHgkaj-_KbOs1aK7hx_jEYMyS3q4Hh0bHTGw/export?format=csv&gid=1369918403"
 
@@ -12,7 +11,7 @@ st.set_page_config(
     page_icon="📦"
 )
 
-# Фоновое изображение (светлый складской фон)
+# Фоновое изображение с прозрачностью
 background_image = """
 <style>
 .stApp {
@@ -28,8 +27,12 @@ background_image = """
     left: 0;
     width: 100%;
     height: 100%;
-    background: rgba(255, 255, 255, 0.92);
-    z-index: -1;
+    background: rgba(255, 255, 255, 0.85);
+    z-index: 0;
+}
+.stApp > div {
+    position: relative;
+    z-index: 1;
 }
 .main-header {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -41,7 +44,7 @@ background_image = """
 }
 .stat-card {
     background: rgba(255, 255, 255, 0.95);
-    backdrop-filter: blur(10px);
+    backdrop-filter: blur(5px);
     padding: 20px;
     border-radius: 15px;
     box-shadow: 0 2px 10px rgba(0,0,0,0.1);
@@ -66,13 +69,13 @@ background_image = """
 }
 .metric-label {
     font-size: 14px;
-    color: #666;
+    color: #333;
     margin-top: 5px;
     font-weight: 500;
 }
 .filter-container {
     background: rgba(255, 255, 255, 0.95);
-    backdrop-filter: blur(10px);
+    backdrop-filter: blur(5px);
     padding: 20px;
     border-radius: 15px;
     box-shadow: 0 2px 10px rgba(0,0,0,0.05);
@@ -87,9 +90,19 @@ background_image = """
 div[data-testid="stMetricValue"] {
     font-size: 28px;
     font-weight: bold;
+    color: #333;
 }
 div[data-testid="stMetricLabel"] {
     font-weight: 500;
+    color: #333;
+}
+.stDataFrame {
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 10px;
+    padding: 10px;
+}
+h1, h2, h3, p, .stMarkdown {
+    color: #333 !important;
 }
 </style>
 """
@@ -170,20 +183,24 @@ with st.container():
     col_filter1, col_filter2, col_filter3 = st.columns(3)
     
     with col_filter1:
-        st.markdown('<div class="filter-label">📅 Дата план отгрузки</div>', unsafe_allow_html=True)
-        # Одна дата, а не период
+        st.markdown('<div class="filter-label">📅 Диапазон дат план отгрузки</div>', unsafe_allow_html=True)
+        # Диапазон дат за весь период
         min_date = df['План дата'].min().date() if not df.empty else datetime(2026, 5, 25).date()
         max_date = df['План дата'].max().date() if not df.empty else datetime.now().date()
         
-        selected_date = st.date_input(
-            "Выберите дату",
-            value=datetime.now().date(),
+        date_range = st.date_input(
+            "Выберите период",
+            value=(min_date, max_date),
             min_value=min_date,
             max_value=max_date,
             label_visibility="collapsed"
         )
         
-        df_filtered = df[df['План дата'].dt.date == selected_date]
+        if len(date_range) == 2:
+            start_date, end_date = date_range
+            df_filtered = df[(df['План дата'].dt.date >= start_date) & (df['План дата'].dt.date <= end_date)]
+        else:
+            df_filtered = df.copy()
     
     with col_filter2:
         st.markdown('<div class="filter-label">🏙️ Город</div>', unsafe_allow_html=True)
@@ -212,7 +229,8 @@ with st.container():
                 df_filtered = df_filtered[df_filtered['Название магазина'] == selected_shop]
 
 # Показываем активные фильтры
-st.caption(f"📅 Дата: {selected_date.strftime('%d.%m.%Y')}")
+if len(date_range) == 2:
+    st.caption(f"📅 Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}")
 if 'selected_city' in locals() and selected_city != 'Все города':
     st.caption(f"🏙️ Город: {selected_city}")
 if 'selected_shop' in locals() and selected_shop != 'Все магазины':
@@ -299,32 +317,29 @@ if st.session_state.selected_status:
     
     st.markdown("---")
 
-# ==================== ОБЩАЯ СТАТИСТИКА ЗА СЕГОДНЯ ====================
-st.markdown("## 📈 Общая статистика за сегодня")
-
-today = datetime.now().date()
-df_today = df_filtered[df_filtered['План дата'].dt.date == today]
+# ==================== ОБЩАЯ СТАТИСТИКА ЗА ПЕРИОД ====================
+st.markdown(f"## 📈 Общая статистика за выбранный период")
 
 col1, col2, col3, col4, col5 = st.columns(5)
 
 with col1:
-    st.metric("📦 Заказов сегодня", len(df_today))
+    st.metric("📦 Всего заказов", len(df_filtered))
 
 with col2:
-    total_items_today = int(df_today['кол-во штук в заказе'].sum())
-    st.metric("📦 Товаров сегодня", f"{total_items_today:,}".replace(',', ' '))
+    total_items = int(df_filtered['кол-во штук в заказе'].sum())
+    st.metric("📦 Всего товаров", f"{total_items:,}".replace(',', ' '))
 
 with col3:
-    in_delivery_today = len(df_today[df_today['Статус отображение'] == "🚚 Доставляется"])
-    st.metric("🚚 В доставке", in_delivery_today)
+    in_delivery = len(df_filtered[df_filtered['Статус отображение'] == "🚚 Доставляется"])
+    st.metric("🚚 В доставке", in_delivery)
 
 with col4:
-    delivered_today = len(df_today[df_today['Доставлен'] == "✅ Доставлен"])
-    st.metric("✅ Доставлено", delivered_today)
+    delivered = len(df_filtered[df_filtered['Доставлен'] == "✅ Доставлен"])
+    st.metric("✅ Доставлено", delivered)
 
 with col5:
-    picking_today = len(df_today[df_today['Статус отображение'].isin(["⏳ Подбирается", "🔄 Сортируется", "📍 В очереди"])])
-    st.metric("⏳ В работе", picking_today)
+    picking = len(df_filtered[df_filtered['Статус отображение'].isin(["⏳ Подбирается", "🔄 Сортируется", "📍 В очереди"])])
+    st.metric("⏳ В работе", picking)
 
 st.markdown("---")
 
@@ -373,7 +388,7 @@ col_info1, col_info2, col_info3 = st.columns(3)
 with col_info1:
     st.caption(f"🔄 Данные обновлены: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
 with col_info2:
-    st.caption(f"📅 Период: с 25 мая 2026")
+    st.caption(f"📅 Данные с 25 мая 2026")
 with col_info3:
     if 'Название магазина' in df_filtered.columns:
         st.caption(f"🏪 Магазинов: {df_filtered['Название магазина'].nunique()}")
