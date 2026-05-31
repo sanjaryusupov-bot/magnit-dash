@@ -27,12 +27,14 @@ st.markdown("""
         border-radius: 15px;
         box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         text-align: center;
-        transition: transform 0.3s;
+        transition: all 0.3s ease;
         cursor: pointer;
+        border: 2px solid transparent;
     }
     .stat-card:hover {
         transform: translateY(-5px);
         box-shadow: 0 5px 20px rgba(0,0,0,0.15);
+        border-color: #667eea;
     }
     .metric-value {
         font-size: 36px;
@@ -40,11 +42,13 @@ st.markdown("""
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
+        margin: 10px 0;
     }
     .metric-label {
         font-size: 14px;
         color: #666;
         margin-top: 5px;
+        font-weight: 500;
     }
     .filter-container {
         background: white;
@@ -124,7 +128,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ==================== УЛУЧШЕННЫЕ ФИЛЬТРЫ ====================
+# ==================== ФИЛЬТРЫ ====================
 st.markdown("## 🔍 Фильтры")
 
 # Создаем контейнер для фильтров
@@ -133,27 +137,23 @@ with st.container():
     
     with col_filter1:
         st.markdown('<div class="filter-label">📅 Дата план отгрузки</div>', unsafe_allow_html=True)
-        # Диапазон дат
+        # Одна дата, а не период
         min_date = df['План дата'].min().date() if not df.empty else datetime(2026, 5, 25).date()
         max_date = df['План дата'].max().date() if not df.empty else datetime.now().date()
         
-        date_range = st.date_input(
-            "Выберите период",
-            value=(min_date, max_date),
+        selected_date = st.date_input(
+            "Выберите дату",
+            value=datetime.now().date(),
             min_value=min_date,
             max_value=max_date,
             label_visibility="collapsed"
         )
         
-        if len(date_range) == 2:
-            start_date, end_date = date_range
-            df_filtered = df[(df['План дата'].dt.date >= start_date) & (df['План дата'].dt.date <= end_date)]
-        else:
-            df_filtered = df.copy()
+        df_filtered = df[df['План дата'].dt.date == selected_date]
     
     with col_filter2:
         st.markdown('<div class="filter-label">🏙️ Город</div>', unsafe_allow_html=True)
-        if 'Город' in df.columns and len(df) > 0:
+        if 'Город' in df.columns and len(df_filtered) > 0:
             cities = ['Все города'] + sorted(df_filtered['Город'].dropna().unique().tolist())
             selected_city = st.selectbox(
                 "Выберите город",
@@ -178,8 +178,7 @@ with st.container():
                 df_filtered = df_filtered[df_filtered['Название магазина'] == selected_shop]
 
 # Показываем активные фильтры
-if len(date_range) == 2:
-    st.caption(f"📅 Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}")
+st.caption(f"📅 Дата: {selected_date.strftime('%d.%m.%Y')}")
 if selected_city != 'Все города':
     st.caption(f"🏙️ Город: {selected_city}")
 if selected_shop != 'Все магазины':
@@ -191,32 +190,54 @@ if len(df_filtered) == 0:
     st.warning("⚠️ Нет данных для отображения")
     st.stop()
 
-# Фильтр по дате (сегодня) для статистики
-today = datetime.now().date()
-df_today = df_filtered[df_filtered['План дата'].dt.date == today]
-
 # ==================== СТАТУСЫ ЗАКАЗОВ С ВОЗМОЖНОСТЬЮ ПРОВАЛА ====================
 st.markdown("## 📊 Статусы заказов")
 
-status_counts = df_filtered['Статус отображение'].value_counts()
+# Правильный порядок статусов
+status_order = [
+    "📍 В очереди",
+    "⏳ Подбирается", 
+    "📦 Подобран",
+    "🔄 Сортируется",
+    "✅ Сортирован",
+    "🚚 Доставляется",
+    "✅ Доставлен"
+]
+
+# Получаем counts в правильном порядке
+status_counts = {}
+for status in status_order:
+    count = len(df_filtered[df_filtered['Статус отображение'] == status])
+    if count > 0:
+        status_counts[status] = count
 
 # Инициализируем состояние для выбранного статуса
 if 'selected_status' not in st.session_state:
     st.session_state.selected_status = None
 
-# Создаем карточки для каждого статуса
-num_statuses = len(status_counts)
-if num_statuses > 0:
-    cols = st.columns(min(num_statuses, 6))
+# Создаем карточки в правильном порядке
+if len(status_counts) > 0:
+    cols = st.columns(min(len(status_counts), 7))
     for idx, (status, count) in enumerate(status_counts.items()):
-        if idx < 6:
+        if idx < 7:
             with cols[idx]:
                 emoji = status.split()[0] if status else "📦"
-                # Делаем карточку кликабельной
+                # Определяем цвет фона для кнопки
+                if status == "✅ Доставлен":
+                    button_css = "background: linear-gradient(135deg, #28a745 0%, #20c997 100%); color: white; border: none;"
+                elif status == "🚚 Доставляется":
+                    button_css = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none;"
+                elif "просроч" in status:
+                    button_css = "background: linear-gradient(135deg, #dc3545 0%, #fd7e14 100%); color: white; border: none;"
+                else:
+                    button_css = "background: white; color: #333; border: 2px solid #667eea;"
+                
+                # Делаем карточку кликабельной с красивым стилем
                 if st.button(
                     f"{emoji}\n\n{count}\n\n{status}", 
                     key=f"status_{status}",
-                    use_container_width=True
+                    use_container_width=True,
+                    type="secondary" if status not in ["✅ Доставлен", "🚚 Доставляется"] else "primary"
                 ):
                     st.session_state.selected_status = status
                     st.rerun()
@@ -247,7 +268,7 @@ if st.session_state.selected_status:
     st.dataframe(detail_display, use_container_width=True, height=400)
     
     # Кнопка закрытия
-    if st.button("✖️ Закрыть детали"):
+    if st.button("✖️ Закрыть детали", use_container_width=True):
         st.session_state.selected_status = None
         st.rerun()
     
@@ -255,6 +276,9 @@ if st.session_state.selected_status:
 
 # ==================== ОБЩАЯ СТАТИСТИКА ЗА СЕГОДНЯ ====================
 st.markdown("## 📈 Общая статистика за сегодня")
+
+today = datetime.now().date()
+df_today = df_filtered[df_filtered['План дата'].dt.date == today]
 
 col1, col2, col3, col4, col5 = st.columns(5)
 
