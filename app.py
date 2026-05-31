@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 from datetime import datetime
 
 ORDERS_URL = "https://docs.google.com/spreadsheets/d/12CxJMCBUHgkaj-_KbOs1aK7hx_jEYMyS3q4Hh0bHTGw/export?format=csv&gid=1369918403"
@@ -11,7 +10,7 @@ st.set_page_config(
     page_icon="📦"
 )
 
-# Кастомный CSS для красивого оформления
+# Кастомный CSS
 st.markdown("""
     <style>
     .stMetric {
@@ -19,22 +18,6 @@ st.markdown("""
         padding: 15px;
         border-radius: 10px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    .metric-value {
-        font-size: 32px;
-        font-weight: bold;
-        color: #1f77b4;
-    }
-    .metric-label {
-        font-size: 14px;
-        color: #666;
-    }
-    .status-card {
-        padding: 10px;
-        border-radius: 8px;
-        margin: 5px 0;
-        background-color: white;
-        border-left: 4px solid;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -59,7 +42,7 @@ needed_columns = [
 existing_columns = [col for col in needed_columns if col in df.columns]
 df = df[existing_columns]
 
-# Маппинг статусов для красивого отображения
+# Только эти статусы
 status_display = {
     "IN_DELIVERY": "🚚 Доставляется",
     "SORTED": "✅ Сортирован",
@@ -67,24 +50,23 @@ status_display = {
     "PICKED": "📦 Подобран",
     "PICKING": "⏳ Подбирается",
     "IN_ASSEMBLY": "📍 В очереди",
-    "COMPLETED": "✨ Завершен",
-    "CANCELLED": "❌ Отменен",
-    "ON_HOLD": "⏸ На удержании"
 }
 
-# Преобразуем статусы
+# Применяем статусы и фильтруем только нужные
 if 'Статус WMS' in df.columns:
-    df['Статус отображение'] = df['Статус WMS'].map(status_display).fillna(df['Статус WMS'])
+    # Маппим только нужные статусы, остальные делаем NaN
+    df['Статус отображение'] = df['Статус WMS'].map(status_display)
+    # Удаляем строки с другими статусами
+    df = df[df['Статус отображение'].notna()]
 
 # Заголовок
 st.title("📦 WMS Dashboard")
 st.markdown("---")
 
-# Фильтры в боковой панели
+# Фильтры
 with st.sidebar:
     st.header("🔍 Фильтры")
     
-    # Фильтр по магазинам
     if 'Название магазина' in df.columns:
         shops = ['Все магазины'] + sorted(df['Название магазина'].dropna().unique().tolist())
         selected_shop = st.selectbox("🏬 Выберите магазин", shops)
@@ -97,15 +79,13 @@ with st.sidebar:
         df_filtered = df.copy()
         selected_shop = 'Все магазины'
     
-    # Фильтр по городу
-    if 'Город' in df.columns:
+    if 'Город' in df_filtered.columns:
         cities = ['Все города'] + sorted(df_filtered['Город'].dropna().unique().tolist())
         selected_city = st.selectbox("🏙️ Город", cities)
         
         if selected_city != 'Все города':
             df_filtered = df_filtered[df_filtered['Город'] == selected_city]
     
-    # Фильтр по статусу
     if 'Статус отображение' in df_filtered.columns:
         statuses = ['Все статусы'] + sorted(df_filtered['Статус отображение'].dropna().unique().tolist())
         selected_status = st.selectbox("📊 Статус", statuses)
@@ -113,7 +93,7 @@ with st.sidebar:
         if selected_status != 'Все статусы':
             df_filtered = df_filtered[df_filtered['Статус отображение'] == selected_status]
 
-# Основные метрики
+# Метрики
 st.subheader("📈 Ключевые показатели")
 col1, col2, col3, col4 = st.columns(4)
 
@@ -122,13 +102,13 @@ with col1:
 
 with col2:
     if 'кол-во штук в заказе' in df_filtered.columns:
-        total_items = df_filtered['кол-во штук в заказе'].sum()
-        st.metric("📦 Всего товаров", f"{total_items:,}")
+        total_items = int(df_filtered['кол-во штук в заказе'].sum())
+        st.metric("📦 Всего товаров", f"{total_items:,}".replace(',', ' '))
 
 with col3:
     if 'Статус отображение' in df_filtered.columns:
-        delivered = len(df_filtered[df_filtered['Статус отображение'].str.contains("Доставляется|Завершен", na=False)])
-        st.metric("🚚 В доставке/Завершено", delivered)
+        delivered = len(df_filtered[df_filtered['Статус отображение'] == "🚚 Доставляется"])
+        st.metric("🚚 В доставке", delivered)
 
 with col4:
     if 'Город' in df_filtered.columns:
@@ -137,42 +117,43 @@ with col4:
 
 st.markdown("---")
 
-# Графики в два столбца
-col_chart1, col_chart2 = st.columns(2)
+# Статистика по статусам (только 6 статусов)
+st.subheader("📊 Статусы заказов")
+if 'Статус отображение' in df_filtered.columns:
+    status_counts = df_filtered['Статус отображение'].value_counts()
+    
+    # Отображаем статусы в виде цветных карточек
+    cols = st.columns(min(len(status_counts), 6))
+    for idx, (status, count) in enumerate(status_counts.items()):
+        with cols[idx % 6]:
+            st.markdown(f"""
+            <div style="background-color: #f8f9fa; padding: 15px; border-radius: 10px; text-align: center; margin: 5px;">
+                <div style="font-size: 28px; font-weight: bold;">{count}</div>
+                <div style="font-size: 14px; color: #666;">{status}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-with col_chart1:
-    st.subheader("📊 Статусы заказов")
-    if 'Статус отображение' in df_filtered.columns:
-        status_counts = df_filtered['Статус отображение'].value_counts().reset_index()
-        status_counts.columns = ['Статус', 'Количество']
-        
-        fig = px.pie(status_counts, values='Количество', names='Статус', 
-                     title='Распределение заказов по статусам',
-                     color_discrete_sequence=px.colors.qualitative.Set3,
-                     hole=0.3)
-        fig.update_traces(textposition='inside', textinfo='percent+label')
-        fig.update_layout(height=400)
-        st.plotly_chart(fig, use_container_width=True)
+# Статистика по городам
+st.markdown("---")
+st.subheader("🏙️ Заказы по городам")
 
-with col_chart2:
-    st.subheader("🏙️ Заказы по городам")
-    if 'Город' in df_filtered.columns:
-        city_counts = df_filtered['Город'].value_counts().head(10).reset_index()
-        city_counts.columns = ['Город', 'Количество']
-        
-        fig = px.bar(city_counts, x='Город', y='Количество', 
-                     title='Топ-10 городов по количеству заказов',
-                     color='Количество',
-                     color_continuous_scale='Blues')
-        fig.update_layout(height=400, xaxis_tickangle=-45)
-        st.plotly_chart(fig, use_container_width=True)
+if 'Город' in df_filtered.columns:
+    city_stats = df_filtered['Город'].value_counts().head(10)
+    
+    # Создаем таблицу для городов
+    city_df = pd.DataFrame({
+        'Город': city_stats.index,
+        'Количество заказов': city_stats.values,
+        '% от общего': (city_stats.values / len(df_filtered) * 100).round(1)
+    })
+    
+    st.dataframe(city_df, use_container_width=True, hide_index=True)
 
 # Таблица с заказами
 st.markdown("---")
 st.subheader("📋 Список заказов")
 
 # Подготовка данных для отображения
-display_columns = []
 column_names = {
     '№ заказа': '№ заказа',
     'Название магазина': 'Магазин',
@@ -182,64 +163,41 @@ column_names = {
     'Статус отображение': 'Статус'
 }
 
-for col, display_name in column_names.items():
-    if col in df_filtered.columns:
-        display_columns.append(display_name)
-
 # Создаем датафрейм для отображения
 df_display = pd.DataFrame()
 for orig_col, display_name in column_names.items():
     if orig_col in df_filtered.columns:
         df_display[display_name] = df_filtered[orig_col]
 
-# Добавляем статус сборки если есть
 if 'Статус сборки' in df_filtered.columns:
     df_display['Статус сборки'] = df_filtered['Статус сборки']
 
-# Форматируем даты
-if 'План отгрузки' in df_display.columns:
-    df_display['План отгрузки'] = pd.to_datetime(df_display['План отгрузки'], errors='coerce').dt.strftime('%d.%m.%Y')
+# Отображаем таблицу
+st.dataframe(df_display, use_container_width=True, height=400)
 
-# Отображаем таблицу с кастомным форматированием
-st.dataframe(
-    df_display,
-    use_container_width=True,
-    height=400,
-    column_config={
-        "Статус": st.column_config.TextColumn(
-            "Статус",
-            help="Текущий статус заказа",
-        ),
-        "Кол-во товаров": st.column_config.NumberColumn(
-            "Кол-во товаров",
-            format="%d шт",
-        ),
-    }
-)
-
-# Дополнительная статистика
+# Детальная статистика
 st.markdown("---")
 with st.expander("📊 Детальная статистика"):
     col_stat1, col_stat2, col_stat3 = st.columns(3)
     
     with col_stat1:
         if 'Город' in df_filtered.columns:
-            st.write("**Заказы по городам:**")
-            city_stats = df_filtered['Город'].value_counts()
-            for city, count in city_stats.head(5).items():
+            st.write("**🏙️ Топ городов:**")
+            for city, count in df_filtered['Город'].value_counts().head(5).items():
                 st.write(f"- {city}: {count} заказов")
     
     with col_stat2:
         if 'Статус отображение' in df_filtered.columns:
-            st.write("**Статусы заказов:**")
-            status_stats = df_filtered['Статус отображение'].value_counts()
-            for status, count in status_stats.items():
-                st.write(f"- {status}: {count} заказов")
+            st.write("**📊 Распределение по статусам:**")
+            for status, count in df_filtered['Статус отображение'].value_counts().items():
+                percentage = (count / len(df_filtered)) * 100
+                st.write(f"- {status}: {count} ({percentage:.1f}%)")
     
     with col_stat3:
         if 'кол-во штук в заказе' in df_filtered.columns:
-            st.write("**Статистика по товарам:**")
+            st.write("**📦 Статистика по товарам:**")
             st.write(f"- Среднее: {df_filtered['кол-во штук в заказе'].mean():.0f} шт")
+            st.write(f"- Медиана: {df_filtered['кол-во штук в заказе'].median():.0f} шт")
             st.write(f"- Максимум: {df_filtered['кол-во штук в заказе'].max():.0f} шт")
             st.write(f"- Минимум: {df_filtered['кол-во штук в заказе'].min():.0f} шт")
 
