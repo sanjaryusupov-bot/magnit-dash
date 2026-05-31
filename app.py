@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 import plotly.express as px
-import plotly.graph_objects as go
 
 ORDERS_URL = "https://docs.google.com/spreadsheets/d/12CxJMCBUHgkaj-_KbOs1aK7hx_jEYMyS3q4Hh0bHTGw/export?format=csv&gid=1369918403"
 
@@ -26,21 +25,32 @@ st.markdown("""
         background: white;
         padding: 20px;
         border-radius: 15px;
-        box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        text-align: center;
         transition: transform 0.3s;
     }
     .stat-card:hover {
         transform: translateY(-5px);
+        box-shadow: 0 5px 20px rgba(0,0,0,0.15);
     }
     .metric-value {
-        font-size: 32px;
+        font-size: 36px;
         font-weight: bold;
-        color: #1f77b4;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
     }
     .metric-label {
         font-size: 14px;
         color: #666;
         margin-top: 5px;
+    }
+    .status-badge {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 20px;
+        font-size: 13px;
+        font-weight: 500;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -64,6 +74,12 @@ needed_columns = [
 existing_columns = [col for col in needed_columns if col in df.columns]
 df = df[existing_columns]
 
+# Фильтр: только заказы с 25 мая 2026
+if 'Дата отгрузки план' in df.columns:
+    df['План дата'] = pd.to_datetime(df['Дата отгрузки план'], errors='coerce')
+    cutoff_date = datetime(2026, 5, 25)
+    df = df[df['План дата'] >= cutoff_date]
+
 # Маппинг статусов
 status_display = {
     "IN_DELIVERY": "🚚 Доставляется",
@@ -74,25 +90,6 @@ status_display = {
     "IN_ASSEMBLY": "📍 В очереди",
 }
 
-# Обработка дат
-if 'Дата отгрузки план' in df.columns:
-    df['Дата отгрузки план'] = pd.to_datetime(df['Дата отгрузки план'], errors='coerce')
-    df['План дата'] = df['Дата отгрузки план'].dt.date
-
-# Определяем статус отгрузки на хаб
-if 'Статус отгрузки на хаб' in df.columns:
-    # Создаем колонку с датой факт отгрузки как строку
-    df['Дата факт отгрузки'] = None
-    df['Статус доставки'] = '🔄 В процессе'
-    
-    for idx, row in df.iterrows():
-        if pd.notna(row['Статус отгрузки на хаб']) and 'отгружен' in str(row['Статус отгрузки на хаб']).lower():
-            df.at[idx, 'Дата факт отгрузки'] = (datetime.now() - timedelta(days=1)).date()
-            df.at[idx, 'Статус доставки'] = '✅ Доставлен'
-    
-    # Конвертируем в datetime
-    df['Дата факт отгрузки'] = pd.to_datetime(df['Дата факт отгрузки'], errors='coerce')
-
 # Применяем статусы WMS
 if 'Статус WMS' in df.columns:
     df['Статус отображение'] = df['Статус WMS'].map(status_display).fillna(df['Статус WMS'])
@@ -102,46 +99,30 @@ if 'Статус WMS' in df.columns:
 if 'кол-во штук в заказе' in df.columns:
     df['кол-во штук в заказе'] = pd.to_numeric(df['кол-во штук в заказе'], errors='coerce').fillna(0)
 
-# Расчет SLA
-def calculate_sla(row):
-    try:
-        plan_date = row['План дата'] if pd.notna(row['План дата']) else None
-        fact_date = row['Дата факт отгрузки'].date() if pd.notna(row['Дата факт отгрузки']) else None
-        
-        if plan_date and fact_date:
-            days_diff = (fact_date - plan_date).days
-            
-            if days_diff <= 0:
-                return "✅ В срок", days_diff
-            elif days_diff <= 3:
-                return "⚠️ Просрочка до 3 дней", days_diff
-            else:
-                return "❌ Сильная просрочка", days_diff
-        elif plan_date:
-            today = datetime.now().date()
-            days_to_plan = (plan_date - today).days
-            if days_to_plan < 0:
-                return "🔴 Просрочен", days_to_plan
-            else:
-                return "🟡 В работе", days_to_plan
-        else:
-            return "Нет данных", 0
-    except:
-        return "Нет данных", 0
-
-sla_results = df.apply(calculate_sla, axis=1, result_type='expand')
-df['SLA статус'] = sla_results[0]
-df['SLA дни'] = sla_results[1]
+# Простая SLA метрика (план vs факт)
+if 'Статус отгрузки на хаб' in df.columns:
+    df['Доставлен'] = df['Статус отгрузки на хаб'].apply(
+        lambda x: '✅ Доставлен' if pd.notna(x) and 'отгружен' in str(x).lower() else '🔄 В процессе'
+    )
+    
+    # Факт отгрузки (если доставлен - ставим вчерашнюю дату)
+    df['Факт отгрузки'] = None
+    for idx, row in df.iterrows():
+        if row['Доставлен'] == '✅ Доставлен':
+            df.at[idx, 'Факт отгрузки'] = datetime.now() - timedelta(days=1)
+    
+    # Расчет простого SLA (в срок или нет)
+    df['SLA'] = df.apply(lambda row: '✅ В срок' if row['Доставлен'] == '✅ Доставлен' else '🟡 В работе', axis=1)
 
 # Заголовок
 st.markdown("""
 <div class="main-header">
     <h1>📦 WMS Dashboard</h1>
-    <p>Аналитика по заказам, SLA и статусам доставки</p>
+    <p>Статусы заказов и детальная информация | Данные с 25 мая 2026</p>
 </div>
 """, unsafe_allow_html=True)
 
-# Фильтры
+# Фильтры в сайдбаре
 with st.sidebar:
     st.markdown("## 🔍 Фильтры")
     
@@ -164,7 +145,7 @@ with st.sidebar:
     
     if len(df_filtered) > 0 and 'Статус отображение' in df_filtered.columns:
         statuses = ['Все статусы'] + sorted(df_filtered['Статус отображение'].dropna().unique().tolist())
-        selected_status = st.selectbox("📊 Статус WMS", statuses)
+        selected_status = st.selectbox("📊 Статус заказа", statuses)
         if selected_status != 'Все статусы':
             df_filtered = df_filtered[df_filtered['Статус отображение'] == selected_status]
 
@@ -172,19 +153,23 @@ if len(df_filtered) == 0:
     st.warning("⚠️ Нет данных для отображения")
     st.stop()
 
-# Статистика по статусам
-st.markdown("## 📊 Текущие статусы заказов")
+# ==================== СТАТУСЫ ЗАКАЗОВ (ГЛАВНОЕ) ====================
+st.markdown("## 📊 Статусы заказов")
+
 status_counts = df_filtered['Статус отображение'].value_counts()
 
-# Создаем колонки динамически
+# Создаем карточки для каждого статуса
 num_statuses = len(status_counts)
 if num_statuses > 0:
     cols = st.columns(min(num_statuses, 6))
     for idx, (status, count) in enumerate(status_counts.items()):
         if idx < 6:
             with cols[idx]:
+                # Эмодзи для статуса
+                emoji = status.split()[0] if status else "📦"
                 st.markdown(f"""
-                <div class="stat-card" style="text-align: center;">
+                <div class="stat-card">
+                    <div style="font-size: 48px;">{emoji}</div>
                     <div class="metric-value">{count}</div>
                     <div class="metric-label">{status}</div>
                 </div>
@@ -192,9 +177,10 @@ if num_statuses > 0:
 
 st.markdown("---")
 
-# Ключевые метрики
-st.markdown("## 📈 Ключевые показатели")
-col1, col2, col3, col4 = st.columns(4)
+# ==================== КЛЮЧЕВЫЕ МЕТРИКИ ====================
+st.markdown("## 📈 Общая статистика")
+
+col1, col2, col3, col4, col5 = st.columns(5)
 
 with col1:
     st.metric("📦 Всего заказов", len(df_filtered))
@@ -208,121 +194,138 @@ with col3:
     st.metric("🚚 В доставке", in_delivery)
 
 with col4:
-    on_time = len(df_filtered[df_filtered['SLA статус'] == "✅ В срок"])
-    st.metric("✅ В срок", on_time)
+    if 'Доставлен' in df_filtered.columns:
+        delivered = len(df_filtered[df_filtered['Доставлен'] == "✅ Доставлен"])
+        st.metric("✅ Доставлено", delivered)
+
+with col5:
+    picking = len(df_filtered[df_filtered['Статус отображение'].isin(["⏳ Подбирается", "🔄 Сортируется", "📍 В очереди"])])
+    st.metric("⏳ В работе", picking)
 
 st.markdown("---")
 
-# SLA Аналитика
-st.markdown("## 🎯 SLA Аналитика")
+# ==================== СРАВНЕНИЕ МАГАЗИНОВ (ПРОСТАЯ SLA) ====================
+st.markdown("## 🏪 Сравнение магазинов по доставке")
 
-col_sla1, col_sla2 = st.columns(2)
-
-with col_sla1:
-    sla_counts = df_filtered['SLA статус'].value_counts()
-    if len(sla_counts) > 0:
-        fig_sla = px.pie(values=sla_counts.values, names=sla_counts.index, 
-                         title="Распределение по SLA",
-                         color_discrete_sequence=['#28a745', '#ffc107', '#dc3545', '#17a2b8'])
-        fig_sla.update_traces(textposition='inside', textinfo='percent+label')
-        fig_sla.update_layout(height=400)
-        st.plotly_chart(fig_sla, use_container_width=True)
-
-with col_sla2:
-    if 'Название магазина' in df_filtered.columns and len(df_filtered['Название магазина'].unique()) > 0:
-        sla_by_shop = df_filtered.groupby('Название магазина')['SLA статус'].apply(
-            lambda x: (x == "✅ В срок").sum() / len(x) * 100 if len(x) > 0 else 0
-        ).sort_values(ascending=False).head(10)
-        
-        if len(sla_by_shop) > 0:
-            fig_shop_sla = px.bar(x=sla_by_shop.values, y=sla_by_shop.index, 
-                                  orientation='h', title="Топ магазинов по SLA (%)",
-                                  color=sla_by_shop.values,
-                                  color_continuous_scale='RdYlGn')
-            fig_shop_sla.update_layout(height=400, xaxis_title="SLA %")
-            st.plotly_chart(fig_shop_sla, use_container_width=True)
-
-st.markdown("---")
-
-# География заказов
-st.markdown("## 📍 География заказов")
-
-col_geo1, col_geo2 = st.columns(2)
-
-with col_geo1:
-    if 'Город' in df_filtered.columns:
-        city_stats = df_filtered['Город'].value_counts().head(10)
-        if len(city_stats) > 0:
-            fig_city = px.bar(x=city_stats.values, y=city_stats.index, 
-                              orientation='h', title="Топ-10 городов по заказам",
-                              color=city_stats.values,
-                              color_continuous_scale='Blues')
-            fig_city.update_layout(height=400)
-            st.plotly_chart(fig_city, use_container_width=True)
-
-with col_geo2:
-    overdue_by_city = df_filtered[df_filtered['SLA статус'].isin(["⚠️ Просрочка до 3 дней", "❌ Сильная просрочка", "🔴 Просрочен"])]
-    if len(overdue_by_city) > 0 and 'Город' in overdue_by_city.columns:
-        city_overdue = overdue_by_city['Город'].value_counts().head(10)
-        if len(city_overdue) > 0:
-            fig_overdue = px.bar(x=city_overdue.values, y=city_overdue.index,
-                                 orientation='h', title="Города с просрочками",
-                                 color=city_overdue.values,
-                                 color_continuous_scale='Reds')
-            fig_overdue.update_layout(height=400)
-            st.plotly_chart(fig_overdue, use_container_width=True)
-        else:
-            st.info("Нет просроченных заказов")
-    else:
-        st.info("Нет просроченных заказов")
+if 'Название магазина' in df_filtered.columns and 'Доставлен' in df_filtered.columns:
+    shop_stats = df_filtered.groupby('Название магазина').agg({
+        '№ заказа': 'count',
+        'кол-во штук в заказе': 'sum',
+        'Доставлен': lambda x: (x == "✅ Доставлен").sum()
+    }).round(0)
+    
+    shop_stats.columns = ['Заказов', 'Товаров', 'Доставлено']
+    shop_stats['Осталось'] = shop_stats['Заказов'] - shop_stats['Доставлено']
+    shop_stats['Доставлено %'] = (shop_stats['Доставлено'] / shop_stats['Заказов'] * 100).round(1)
+    shop_stats = shop_stats.sort_values('Доставлено %', ascending=False)
+    
+    col_shop1, col_shop2 = st.columns(2)
+    
+    with col_shop1:
+        # График доставки по магазинам
+        fig_delivery = px.bar(shop_stats.head(15), 
+                               x='Доставлено %', 
+                               y=shop_stats.head(15).index,
+                               orientation='h',
+                               title="Доставка по магазинам (%)",
+                               text='Доставлено %',
+                               color='Доставлено %',
+                               color_continuous_scale='RdYlGn',
+                               range_color=[0, 100])
+        fig_delivery.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+        fig_delivery.update_layout(height=500, xaxis_title="Доставлено %")
+        st.plotly_chart(fig_delivery, use_container_width=True)
+    
+    with col_shop2:
+        # Количество товаров по магазинам
+        fig_items = px.bar(shop_stats.head(15),
+                           x='Товаров',
+                           y=shop_stats.head(15).index,
+                           orientation='h',
+                           title="Количество товаров по магазинам",
+                           text='Товаров',
+                           color='Товаров',
+                           color_continuous_scale='Blues')
+        fig_items.update_traces(texttemplate='%{text}', textposition='outside')
+        fig_items.update_layout(height=500)
+        st.plotly_chart(fig_items, use_container_width=True)
+    
+    # Таблица с данными
+    st.markdown("### 📊 Детальная статистика по магазинам")
+    st.dataframe(shop_stats, use_container_width=True)
 
 st.markdown("---")
 
-# Таблица заказов
-st.markdown("## 📋 Детальная таблица заказов")
+# ==================== ДЕТАЛЬНАЯ ТАБЛИЦА ЗАКАЗОВ ====================
+st.markdown("## 📋 Детальная информация по заказам")
 
+# Подготовка данных для таблицы
 df_table = df_filtered.copy()
-df_table['Статус'] = df_table['Статус отображение']
-df_table['SLA'] = df_table['SLA статус']
+df_table['План отгрузки'] = df_table['План дата'].dt.strftime('%d.%m.%Y') if 'План дата' in df_table else '—'
+df_table['Факт отгрузки'] = df_table['Факт отгрузки'].dt.strftime('%d.%m.%Y') if 'Факт отгрузки' in df_table else '—'
+df_table['Статус заказа'] = df_table['Статус отображение']
 
 # Выбираем колонки для отображения
 display_cols = ['№ заказа', 'Название магазина', 'Город', 'кол-во штук в заказе', 
-                'План дата', 'Статус', 'SLA', 'Статус доставки']
+                'План отгрузки', 'Факт отгрузки', 'Статус заказа', 'Статус сборки', 'Доставлен']
 
-display_names = ['№ заказа', 'Магазин', 'Город', 'Товаров', 'План отгрузки', 
-                 'Статус WMS', 'SLA', 'Доставка']
+display_names = ['№ заказа', 'Магазин', 'Город', 'Кол-во товаров', 
+                 'План отгрузки', 'Факт отгрузки', 'Статус WMS', 'Статус сборки', 'Доставка']
 
 df_display = pd.DataFrame()
 for col, name in zip(display_cols, display_names):
     if col in df_table.columns:
         df_display[name] = df_table[col]
 
-if 'План отгрузки' in df_display.columns:
-    df_display['План отгрузки'] = pd.to_datetime(df_display['План отгрузки'], errors='coerce').dt.strftime('%d.%m.%Y')
+# Поиск по заказам
+search = st.text_input("🔍 Поиск по номеру заказа", placeholder="Введите номер заказа...")
+if search:
+    df_display = df_display[df_display['№ заказа'].astype(str).str.contains(search, case=False)]
 
-st.dataframe(df_display, use_container_width=True, height=400)
+# Отображаем таблицу
+st.dataframe(df_display, use_container_width=True, height=500)
 
-# Расширенная аналитика
-with st.expander("📊 Расширенная аналитика"):
-    if 'Название магазина' in df_filtered.columns:
-        shop_analytics = df_filtered.groupby('Название магазина').agg({
-            '№ заказа': 'count',
-            'кол-во штук в заказе': 'sum',
-            'SLA статус': lambda x: (x == "✅ В срок").sum() / len(x) * 100 if len(x) > 0 else 0
-        }).round(2)
-        shop_analytics.columns = ['Заказов', 'Товаров', 'SLA %']
-        shop_analytics = shop_analytics.sort_values('SLA %', ascending=False)
-        st.dataframe(shop_analytics, use_container_width=True)
+# ==================== СТАТУСЫ СБОРКИ ====================
+if 'Статус сборки' in df_filtered.columns:
+    st.markdown("---")
+    st.markdown("## 🔧 Статусы сборки")
     
-    # Статистика просрочек
-    overdue_orders = df_filtered[df_filtered['SLA статус'].isin(["⚠️ Просрочка до 3 дней", "❌ Сильная просрочка", "🔴 Просрочен"])]
-    if len(overdue_orders) > 0:
-        st.warning(f"⚠️ Найдено {len(overdue_orders)} просроченных заказов")
-        overdue_display = overdue_orders[['№ заказа', 'Название магазина', 'Город', 'SLA статус', 'SLA дни']]
-        st.dataframe(overdue_display, use_container_width=True)
-    else:
-        st.success("✅ Нет просроченных заказов!")
+    col_assembly1, col_assembly2 = st.columns(2)
+    
+    with col_assembly1:
+        assembly_stats = df_filtered['Статус сборки'].value_counts()
+        if len(assembly_stats) > 0:
+            fig_assembly = px.pie(values=assembly_stats.values, 
+                                   names=assembly_stats.index,
+                                   title="Распределение по статусам сборки",
+                                   hole=0.3)
+            fig_assembly.update_traces(textposition='inside', textinfo='percent+label')
+            st.plotly_chart(fig_assembly, use_container_width=True)
+    
+    with col_assembly2:
+        # Статусы сборки по магазинам
+        assembly_by_shop = df_filtered.groupby('Название магазина')['Статус сборки'].value_counts().unstack().fillna(0)
+        if len(assembly_by_shop) > 0:
+            st.markdown("### Статусы сборки по магазинам")
+            st.dataframe(assembly_by_shop.head(15), use_container_width=True)
+
+# ==================== ЭКСПОРТ ДАННЫХ ====================
+with st.expander("📥 Экспорт данных"):
+    csv_data = df_display.to_csv(index=False)
+    st.download_button(
+        label="📥 Скачать данные в CSV",
+        data=csv_data,
+        file_name=f"wms_orders_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+        mime="text/csv"
+    )
 
 # Информация об обновлении
 st.markdown("---")
-st.caption(f"🔄 Данные обновлены: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')} | Всего заказов: {len(df_filtered)}")
+col_info1, col_info2, col_info3 = st.columns(3)
+with col_info1:
+    st.caption(f"🔄 Данные обновлены: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
+with col_info2:
+    st.caption(f"📅 Период: с 25 мая 2026")
+with col_info3:
+    if 'Название магазина' in df_filtered.columns:
+        st.caption(f"🏪 Магазинов: {df_filtered['Название магазина'].nunique()}")
