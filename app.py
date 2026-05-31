@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 import plotly.express as px
+import base64
 
 ORDERS_URL = "https://docs.google.com/spreadsheets/d/12CxJMCBUHgkaj-_KbOs1aK7hx_jEYMyS3q4Hh0bHTGw/export?format=csv&gid=1369918403"
 
@@ -11,60 +12,89 @@ st.set_page_config(
     page_icon="📦"
 )
 
-# Кастомный CSS
-st.markdown("""
-    <style>
-    .main-header {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 20px;
-        border-radius: 15px;
-        color: white;
-        margin-bottom: 30px;
-    }
-    .stat-card {
-        background: white;
-        padding: 20px;
-        border-radius: 15px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        text-align: center;
-        transition: all 0.3s ease;
-        cursor: pointer;
-        border: 2px solid transparent;
-    }
-    .stat-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 5px 20px rgba(0,0,0,0.15);
-        border-color: #667eea;
-    }
-    .metric-value {
-        font-size: 36px;
-        font-weight: bold;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin: 10px 0;
-    }
-    .metric-label {
-        font-size: 14px;
-        color: #666;
-        margin-top: 5px;
-        font-weight: 500;
-    }
-    .filter-container {
-        background: white;
-        padding: 20px;
-        border-radius: 15px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-        margin-bottom: 20px;
-    }
-    .filter-label {
-        font-weight: 600;
-        color: #333;
-        margin-bottom: 8px;
-        font-size: 14px;
-    }
-    </style>
-""", unsafe_allow_html=True)
+# Фоновое изображение (светлый складской фон)
+background_image = """
+<style>
+.stApp {
+    background-image: url("https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?q=80&w=2070&auto=format&fit=crop");
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed;
+}
+.stApp::before {
+    content: "";
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(255, 255, 255, 0.92);
+    z-index: -1;
+}
+.main-header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    padding: 20px;
+    border-radius: 15px;
+    color: white;
+    margin-bottom: 30px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+}
+.stat-card {
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    padding: 20px;
+    border-radius: 15px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    text-align: center;
+    transition: all 0.3s ease;
+    cursor: pointer;
+    border: 2px solid transparent;
+}
+.stat-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 5px 20px rgba(0,0,0,0.15);
+    border-color: #667eea;
+    background: white;
+}
+.metric-value {
+    font-size: 36px;
+    font-weight: bold;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin: 10px 0;
+}
+.metric-label {
+    font-size: 14px;
+    color: #666;
+    margin-top: 5px;
+    font-weight: 500;
+}
+.filter-container {
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    padding: 20px;
+    border-radius: 15px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    margin-bottom: 20px;
+}
+.filter-label {
+    font-weight: 600;
+    color: #333;
+    margin-bottom: 8px;
+    font-size: 14px;
+}
+div[data-testid="stMetricValue"] {
+    font-size: 28px;
+    font-weight: bold;
+}
+div[data-testid="stMetricLabel"] {
+    font-weight: 500;
+}
+</style>
+"""
+
+st.markdown(background_image, unsafe_allow_html=True)
 
 @st.cache_data(ttl=60)
 def load_data():
@@ -131,6 +161,10 @@ st.markdown("""
 # ==================== ФИЛЬТРЫ ====================
 st.markdown("## 🔍 Фильтры")
 
+# Инициализируем переменные для фильтров
+selected_city = 'Все города'
+selected_shop = 'Все магазины'
+
 # Создаем контейнер для фильтров
 with st.container():
     col_filter1, col_filter2, col_filter3 = st.columns(3)
@@ -179,9 +213,9 @@ with st.container():
 
 # Показываем активные фильтры
 st.caption(f"📅 Дата: {selected_date.strftime('%d.%m.%Y')}")
-if selected_city != 'Все города':
+if 'selected_city' in locals() and selected_city != 'Все города':
     st.caption(f"🏙️ Город: {selected_city}")
-if selected_shop != 'Все магазины':
+if 'selected_shop' in locals() and selected_shop != 'Все магазины':
     st.caption(f"🏬 Магазин: {selected_shop}")
 
 st.markdown("---")
@@ -222,22 +256,13 @@ if len(status_counts) > 0:
         if idx < 7:
             with cols[idx]:
                 emoji = status.split()[0] if status else "📦"
-                # Определяем цвет фона для кнопки
-                if status == "✅ Доставлен":
-                    button_css = "background: linear-gradient(135deg, #28a745 0%, #20c997 100%); color: white; border: none;"
-                elif status == "🚚 Доставляется":
-                    button_css = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none;"
-                elif "просроч" in status:
-                    button_css = "background: linear-gradient(135deg, #dc3545 0%, #fd7e14 100%); color: white; border: none;"
-                else:
-                    button_css = "background: white; color: #333; border: 2px solid #667eea;"
                 
                 # Делаем карточку кликабельной с красивым стилем
                 if st.button(
                     f"{emoji}\n\n{count}\n\n{status}", 
                     key=f"status_{status}",
                     use_container_width=True,
-                    type="secondary" if status not in ["✅ Доставлен", "🚚 Доставляется"] else "primary"
+                    type="primary" if status in ["✅ Доставлен", "🚚 Доставляется"] else "secondary"
                 ):
                     st.session_state.selected_status = status
                     st.rerun()
