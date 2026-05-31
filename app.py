@@ -46,6 +46,19 @@ st.markdown("""
         color: #666;
         margin-top: 5px;
     }
+    .filter-container {
+        background: white;
+        padding: 20px;
+        border-radius: 15px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        margin-bottom: 20px;
+    }
+    .filter-label {
+        font-weight: 600;
+        color: #333;
+        margin-bottom: 8px;
+        font-size: 14px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -111,32 +124,74 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Фильтры в сайдбаре
-with st.sidebar:
-    st.markdown("## 🔍 Фильтры")
+# ==================== УЛУЧШЕННЫЕ ФИЛЬТРЫ ====================
+st.markdown("## 🔍 Фильтры")
+
+# Создаем контейнер для фильтров
+with st.container():
+    col_filter1, col_filter2, col_filter3 = st.columns(3)
     
-    if 'Название магазина' in df.columns and len(df) > 0:
-        shops = ['Все магазины'] + sorted(df['Название магазина'].dropna().unique().tolist())
-        selected_shop = st.selectbox("🏬 Магазин", shops)
+    with col_filter1:
+        st.markdown('<div class="filter-label">📅 Дата план отгрузки</div>', unsafe_allow_html=True)
+        # Диапазон дат
+        min_date = df['План дата'].min().date() if not df.empty else datetime(2026, 5, 25).date()
+        max_date = df['План дата'].max().date() if not df.empty else datetime.now().date()
         
-        if selected_shop != 'Все магазины':
-            df_filtered = df[df['Название магазина'] == selected_shop]
+        date_range = st.date_input(
+            "Выберите период",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            label_visibility="collapsed"
+        )
+        
+        if len(date_range) == 2:
+            start_date, end_date = date_range
+            df_filtered = df[(df['План дата'].dt.date >= start_date) & (df['План дата'].dt.date <= end_date)]
         else:
             df_filtered = df.copy()
-    else:
-        df_filtered = df.copy()
     
-    if len(df_filtered) > 0 and 'Город' in df_filtered.columns:
-        cities = ['Все города'] + sorted(df_filtered['Город'].dropna().unique().tolist())
-        selected_city = st.selectbox("🏙️ Город", cities)
-        if selected_city != 'Все города':
-            df_filtered = df_filtered[df_filtered['Город'] == selected_city]
+    with col_filter2:
+        st.markdown('<div class="filter-label">🏙️ Город</div>', unsafe_allow_html=True)
+        if 'Город' in df.columns and len(df) > 0:
+            cities = ['Все города'] + sorted(df_filtered['Город'].dropna().unique().tolist())
+            selected_city = st.selectbox(
+                "Выберите город",
+                options=cities,
+                index=0,
+                label_visibility="collapsed"
+            )
+            if selected_city != 'Все города':
+                df_filtered = df_filtered[df_filtered['Город'] == selected_city]
+    
+    with col_filter3:
+        st.markdown('<div class="filter-label">🏬 Магазин</div>', unsafe_allow_html=True)
+        if 'Название магазина' in df.columns and len(df_filtered) > 0:
+            shops = ['Все магазины'] + sorted(df_filtered['Название магазина'].dropna().unique().tolist())
+            selected_shop = st.selectbox(
+                "Выберите магазин",
+                options=shops,
+                index=0,
+                label_visibility="collapsed"
+            )
+            if selected_shop != 'Все магазины':
+                df_filtered = df_filtered[df_filtered['Название магазина'] == selected_shop]
+
+# Показываем активные фильтры
+if len(date_range) == 2:
+    st.caption(f"📅 Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}")
+if selected_city != 'Все города':
+    st.caption(f"🏙️ Город: {selected_city}")
+if selected_shop != 'Все магазины':
+    st.caption(f"🏬 Магазин: {selected_shop}")
+
+st.markdown("---")
 
 if len(df_filtered) == 0:
     st.warning("⚠️ Нет данных для отображения")
     st.stop()
 
-# Фильтр по дате (сегодня)
+# Фильтр по дате (сегодня) для статистики
 today = datetime.now().date()
 df_today = df_filtered[df_filtered['План дата'].dt.date == today]
 
