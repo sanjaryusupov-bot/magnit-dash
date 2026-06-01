@@ -155,13 +155,14 @@ if 'Статус WMS' in df.columns:
 if 'кол-во штук в заказе' in df.columns:
     df['кол-во штук в заказе'] = pd.to_numeric(df['кол-во штук в заказе'], errors='coerce').fillna(0)
 
-# Определяем доставку: если статус WMS "Доставляется", то доставлено
-df['Доставлен'] = df['Статус отображение'].apply(
-    lambda x: '✅ Доставлен' if x == '🚚 Доставляется' else '🔄 В процессе'
-)
+# Определяем доставку и дату факта отгрузки
+df['Дата факт отгрузки'] = pd.NaT
+df['Доставлен'] = '🔄 В процессе'
 
-# Факт отгрузки = сегодняшняя дата для доставленных
-df['Факт отгрузки'] = datetime.now().date() if 'Доставлен' in df.columns else None
+for idx, row in df.iterrows():
+    if row['Статус отображение'] == "🚚 Доставляется":
+        df.at[idx, 'Доставлен'] = '✅ Доставлен'
+        df.at[idx, 'Дата факт отгрузки'] = datetime.now()
 
 # Заголовок
 st.markdown("""
@@ -295,7 +296,8 @@ if st.session_state.selected_status:
     # Подготовка таблицы
     status_table = status_orders.copy()
     status_table['План отгрузки'] = status_table['План дата'].dt.strftime('%d.%m.%Y')
-    status_table['Факт отгрузки'] = datetime.now().strftime('%d.%m.%Y') if st.session_state.selected_status == "🚚 Доставляется" else "—"
+    status_table['Факт отгрузки'] = status_table['Дата факт отгрузки'].dt.strftime('%d.%m.%Y %H:%M') if 'Дата факт отгрузки' in status_table else "—"
+    status_table['Факт отгрузки'] = status_table['Факт отгрузки'].fillna("—")
     
     # Выбираем колонки
     detail_cols = ['№ заказа', 'Название магазина', 'Город', 'кол-во штук в заказе', 
@@ -349,7 +351,8 @@ st.markdown("## 📋 Все заказы")
 # Подготовка данных для таблицы
 df_table = df_filtered.copy()
 df_table['План отгрузки'] = df_table['План дата'].dt.strftime('%d.%m.%Y')
-df_table['Факт отгрузки'] = datetime.now().strftime('%d.%m.%Y')
+df_table['Факт отгрузки'] = df_table['Дата факт отгрузки'].dt.strftime('%d.%m.%Y %H:%M') if 'Дата факт отгрузки' in df_table else "—"
+df_table['Факт отгрузки'] = df_table['Факт отгрузки'].fillna("—")
 df_table['Статус заказа'] = df_table['Статус отображение']
 
 # Выбираем колонки для отображения
