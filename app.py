@@ -296,7 +296,7 @@ if st.session_state.selected_status:
     # Подготовка таблицы
     status_table = status_orders.copy()
     status_table['План отгрузки'] = status_table['План дата'].dt.strftime('%d.%m.%Y')
-    status_table['Факт отгрузки'] = status_table['Дата факт отгрузки'].dt.strftime('%d.%m.%Y %H:%M') if 'Дата факт отгрузки' in status_table else "—"
+    status_table['Факт отгрузки'] = status_table['Дата факт отгрузки'].dt.strftime('%d.%m.%Y') if 'Дата факт отгрузки' in status_table else "—"
     status_table['Факт отгрузки'] = status_table['Факт отгрузки'].fillna("—")
     
     # Выбираем колонки
