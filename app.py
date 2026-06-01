@@ -3,7 +3,9 @@ import pandas as pd
 from datetime import datetime, timedelta
 import plotly.express as px
 
-ORDERS_URL = "https://docs.google.com/spreadsheets/d/12CxJMCBUHgkaj-_KbOs1aK7hx_jEYMyS3q4Hh0bHTGw/export?format=csv&gid=1369918403"
+# --- Ссылки на Google Sheets (CSV экспорт) ---
+ORDERS_URL = "https://docs.google.com/spreadsheets/d/12CxJMCBUHgkaj-_KbOs1aK7hx_jEYMyS3q4Hh0bHTGw/export?format=csv&gid=1369918403"          # Заказы
+SHIPMENTS_URL = "https://docs.google.com/spreadsheets/d/12CxJMCBUHgkaj-_KbOs1aK7hx_jEYMyS3q4Hh0bHTGw/export?format=csv&gid=115422827"     # Статус по отгрузкам
 
 st.set_page_config(
     page_title="WMS Dashboard", 
@@ -11,7 +13,7 @@ st.set_page_config(
     page_icon="📦"
 )
 
-# Фоновое изображение с прозрачностью
+# --- Фоновое изображение с прозрачностью ---
 background_image = """
 <style>
 .stApp {
@@ -73,14 +75,6 @@ background_image = """
     margin-top: 5px;
     font-weight: 500;
 }
-.filter-container {
-    background: rgba(255, 255, 255, 0.95);
-    backdrop-filter: blur(5px);
-    padding: 20px;
-    border-radius: 15px;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-    margin-bottom: 20px;
-}
 .filter-label {
     font-weight: 600;
     color: #333;
@@ -106,37 +100,54 @@ h1, h2, h3, p, .stMarkdown {
 }
 </style>
 """
-
 st.markdown(background_image, unsafe_allow_html=True)
 
+# --- Загрузка данных ---
 @st.cache_data(ttl=60)
 def load_data():
-    df = pd.read_csv(ORDERS_URL)
-    df.columns = df.columns.str.strip()
-    return df
+    # 1. Заказы
+    df_orders = pd.read_csv(ORDERS_URL)
+    df_orders.columns = df_orders.columns.str.strip()
+    
+    # 2. Статус по отгрузкам (фактические даты отгрузки)
+    try:
+        df_ship = pd.read_csv(SHIPMENTS_URL)
+        df_ship.columns = df_ship.columns.str.strip()
+        # Ожидаем колонки: 'B' = Дата отгрузки, 'C' = Заказ (или по именам)
+        # На всякий случай переименуем первые две колонки, если они безымянные
+        if len(df_ship.columns) >= 2:
+            df_ship = df_ship.iloc[:, :2]  # берём первые две колонки
+            df_ship.columns = ['Дата отгрузки', 'Заказ']
+        # Приводим дату к datetime (только дата)
+        df_ship['Дата отгрузки'] = pd.to_datetime(df_ship['Дата отгрузки'], errors='coerce').dt.date
+        # Удаляем строки без номера заказа
+        df_ship = df_ship.dropna(subset=['Заказ'])
+        df_ship['Заказ'] = df_ship['Заказ'].astype(str).str.strip()
+    except Exception as e:
+        st.warning(f"Не удалось загрузить данные отгрузок: {e}")
+        df_ship = pd.DataFrame(columns=['Заказ', 'Дата отгрузки'])
+    
+    return df_orders, df_ship
 
-df = load_data()
+df_orders, df_ship = load_data()
 
-# Отображаем только нужные колонки
+# --- Подготовка основного датафрейма заказов ---
 needed_columns = [
     '№ заказа', 'ID магазина', 'Название магазина', 
     'Адрес магазина', 'кол-во штук в заказе', 
     'Дата отгрузки план', 'Город', 'Статус сборки', 
     'Статус WMS', 'Статус отгрузки на хаб'
 ]
+existing_columns = [col for col in needed_columns if col in df_orders.columns]
+df = df_orders[existing_columns].copy()
 
-existing_columns = [col for col in needed_columns if col in df.columns]
-df = df[existing_columns]
-
-# Конвертируем даты
+# Дата план
 if 'Дата отгрузки план' in df.columns:
     df['План дата'] = pd.to_datetime(df['Дата отгрузки план'], errors='coerce')
+    cutoff_date = datetime(2026, 5, 25)
+    df = df[df['План дата'] >= cutoff_date]
 
-# Фильтр: только заказы с 25 мая 2026
-cutoff_date = datetime(2026, 5, 25)
-df = df[df['План дата'] >= cutoff_date]
-
-# Маппинг статусов
+# Маппинг статусов WMS
 status_display = {
     "IN_DELIVERY": "🚚 Доставляется",
     "SORTED": "✅ Сортирован",
@@ -145,26 +156,30 @@ status_display = {
     "PICKING": "⏳ Подбирается",
     "IN_ASSEMBLY": "📍 В очереди",
 }
-
-# Применяем статусы WMS
 if 'Статус WMS' in df.columns:
     df['Статус отображение'] = df['Статус WMS'].map(status_display).fillna(df['Статус WMS'])
     df = df[df['Статус отображение'].notna()]
 
-# Конвертируем количество товаров
+# Количество товаров
 if 'кол-во штук в заказе' in df.columns:
     df['кол-во штук в заказе'] = pd.to_numeric(df['кол-во штук в заказе'], errors='coerce').fillna(0)
 
-# Определяем доставку и дату факта отгрузки
-df['Дата факт отгрузки'] = pd.NaT
-df['Доставлен'] = '🔄 В процессе'
+# --- Добавляем фактические даты отгрузки из второго листа ---
+df['Заказ_ключ'] = df['№ заказа'].astype(str).str.strip()
+df_ship['Заказ_ключ'] = df_ship['Заказ'].astype(str).str.strip()
 
-for idx, row in df.iterrows():
-    if row['Статус отображение'] == "🚚 Доставляется":
-        df.at[idx, 'Доставлен'] = '✅ Доставлен'
-        df.at[idx, 'Дата факт отгрузки'] = datetime.now()
+# Объединяем с данными отгрузок
+df = df.merge(df_ship[['Заказ_ключ', 'Дата отгрузки']], on='Заказ_ключ', how='left')
+df.rename(columns={'Дата отгрузки': 'Дата факт отгрузки'}, inplace=True)
 
-# Заголовок
+# Статус доставки: Доставлен = есть дата факт, иначе В процессе
+df['Доставлен'] = df['Дата факт отгрузки'].apply(lambda x: '✅ Доставлен' if pd.notna(x) else '🔄 В процессе')
+
+# Для заказов со статусом WMS "Доставляется" – тоже считаем доставленными, если есть дата
+# (логика остаётся: если есть дата из второго листа – доставлен)
+# Ничего дополнительно не меняем.
+
+# --- Заголовок ---
 st.markdown("""
 <div class="main-header">
     <h1>📦 WMS Dashboard</h1>
@@ -172,31 +187,20 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ==================== ФИЛЬТРЫ ====================
+# --- ФИЛЬТРЫ ---
 st.markdown("## 🔍 Фильтры")
 
-# Инициализируем переменные для фильтров
 selected_city = 'Все города'
 selected_shop = 'Все магазины'
 
-# Создаем контейнер для фильтров
 with st.container():
     col_filter1, col_filter2, col_filter3 = st.columns(3)
     
     with col_filter1:
         st.markdown('<div class="filter-label">📅 Диапазон дат план отгрузки</div>', unsafe_allow_html=True)
-        # Диапазон дат за весь период
         min_date = df['План дата'].min().date() if not df.empty else datetime(2026, 5, 25).date()
         max_date = df['План дата'].max().date() if not df.empty else datetime.now().date()
-        
-        date_range = st.date_input(
-            "Выберите период",
-            value=(min_date, max_date),
-            min_value=min_date,
-            max_value=max_date,
-            label_visibility="collapsed"
-        )
-        
+        date_range = st.date_input("Выберите период", value=(min_date, max_date), min_value=min_date, max_value=max_date, label_visibility="collapsed")
         if len(date_range) == 2:
             start_date, end_date = date_range
             df_filtered = df[(df['План дата'].dt.date >= start_date) & (df['План дата'].dt.date <= end_date)]
@@ -207,12 +211,7 @@ with st.container():
         st.markdown('<div class="filter-label">🏙️ Город</div>', unsafe_allow_html=True)
         if 'Город' in df.columns and len(df_filtered) > 0:
             cities = ['Все города'] + sorted(df_filtered['Город'].dropna().unique().tolist())
-            selected_city = st.selectbox(
-                "Выберите город",
-                options=cities,
-                index=0,
-                label_visibility="collapsed"
-            )
+            selected_city = st.selectbox("Выберите город", options=cities, index=0, label_visibility="collapsed")
             if selected_city != 'Все города':
                 df_filtered = df_filtered[df_filtered['Город'] == selected_city]
     
@@ -220,178 +219,92 @@ with st.container():
         st.markdown('<div class="filter-label">🏬 Магазин</div>', unsafe_allow_html=True)
         if 'Название магазина' in df.columns and len(df_filtered) > 0:
             shops = ['Все магазины'] + sorted(df_filtered['Название магазина'].dropna().unique().tolist())
-            selected_shop = st.selectbox(
-                "Выберите магазин",
-                options=shops,
-                index=0,
-                label_visibility="collapsed"
-            )
+            selected_shop = st.selectbox("Выберите магазин", options=shops, index=0, label_visibility="collapsed")
             if selected_shop != 'Все магазины':
                 df_filtered = df_filtered[df_filtered['Название магазина'] == selected_shop]
 
-# Показываем активные фильтры
 if len(date_range) == 2:
     st.caption(f"📅 Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}")
-if 'selected_city' in locals() and selected_city != 'Все города':
+if selected_city != 'Все города':
     st.caption(f"🏙️ Город: {selected_city}")
-if 'selected_shop' in locals() and selected_shop != 'Все магазины':
+if selected_shop != 'Все магазины':
     st.caption(f"🏬 Магазин: {selected_shop}")
-
 st.markdown("---")
 
-if len(df_filtered) == 0:
+if df_filtered.empty:
     st.warning("⚠️ Нет данных для отображения")
     st.stop()
 
-# ==================== СТАТУСЫ ЗАКАЗОВ С ВОЗМОЖНОСТЬЮ ПРОВАЛА ====================
+# --- СТАТУСЫ ЗАКАЗОВ (ПРОВАЛ) ---
 st.markdown("## 📊 Статусы заказов")
 
-# Правильный порядок статусов
-status_order = [
-    "📍 В очереди",
-    "⏳ Подбирается", 
-    "📦 Подобран",
-    "🔄 Сортируется",
-    "✅ Сортирован",
-    "🚚 Доставляется",
-    "✅ Доставлен"
-]
-
-# Получаем counts в правильном порядке
+status_order = ["📍 В очереди", "⏳ Подбирается", "📦 Подобран", "🔄 Сортируется", "✅ Сортирован", "🚚 Доставляется", "✅ Доставлен"]
 status_counts = {}
 for status in status_order:
-    count = len(df_filtered[df_filtered['Статус отображение'] == status])
-    if count > 0:
-        status_counts[status] = count
+    cnt = len(df_filtered[df_filtered['Статус отображение'] == status])
+    if cnt > 0:
+        status_counts[status] = cnt
 
-# Инициализируем состояние для выбранного статуса
 if 'selected_status' not in st.session_state:
     st.session_state.selected_status = None
 
-# Создаем карточки в правильном порядке
-if len(status_counts) > 0:
+if status_counts:
     cols = st.columns(min(len(status_counts), 7))
     for idx, (status, count) in enumerate(status_counts.items()):
-        if idx < 7:
-            with cols[idx]:
-                emoji = status.split()[0] if status else "📦"
-                
-                # Делаем карточку кликабельной с красивым стилем
-                if st.button(
-                    f"{emoji}\n\n{count}\n\n{status}", 
-                    key=f"status_{status}",
-                    use_container_width=True,
-                    type="primary" if status in ["✅ Доставлен", "🚚 Доставляется"] else "secondary"
-                ):
-                    st.session_state.selected_status = status
-                    st.rerun()
+        with cols[idx]:
+            emoji = status.split()[0]
+            if st.button(f"{emoji}\n\n{count}\n\n{status}", key=f"status_{status}", use_container_width=True,
+                         type="primary" if status in ["✅ Доставлен", "🚚 Доставляется"] else "secondary"):
+                st.session_state.selected_status = status
+                st.rerun()
 
-# Отображаем детали выбранного статуса
 if st.session_state.selected_status:
     st.markdown(f"### 📋 Заказы со статусом: {st.session_state.selected_status}")
-    
-    # Фильтруем заказы по выбранному статусу
     status_orders = df_filtered[df_filtered['Статус отображение'] == st.session_state.selected_status]
-    
-    # Подготовка таблицы
     status_table = status_orders.copy()
     status_table['План отгрузки'] = status_table['План дата'].dt.strftime('%d.%m.%Y')
-    status_table['Факт отгрузки'] = status_table['Дата факт отгрузки'].dt.strftime('%d.%m.%Y') if 'Дата факт отгрузки' in status_table else "—"
-    status_table['Факт отгрузки'] = status_table['Факт отгрузки'].fillna("—")
-    
-    # Выбираем колонки
-    detail_cols = ['№ заказа', 'Название магазина', 'Город', 'кол-во штук в заказе', 
-                   'План отгрузки', 'Факт отгрузки', 'Доставлен']
-    detail_names = ['№ заказа', 'Магазин', 'Город', 'Кол-во товаров', 
-                    'План отгрузки', 'Факт отгрузки', 'Доставка']
-    
-    detail_display = pd.DataFrame()
-    for col, name in zip(detail_cols, detail_names):
-        if col in status_table.columns:
-            detail_display[name] = status_table[col]
-    
+    status_table['Факт отгрузки'] = status_table['Дата факт отгрузки'].apply(lambda x: x.strftime('%d.%m.%Y') if pd.notna(x) else "—")
+    detail_cols = ['№ заказа', 'Название магазина', 'Город', 'кол-во штук в заказе', 'План отгрузки', 'Факт отгрузки', 'Доставлен']
+    detail_names = ['№ заказа', 'Магазин', 'Город', 'Кол-во товаров', 'План отгрузки', 'Факт отгрузки', 'Доставка']
+    detail_display = pd.DataFrame({name: status_table[col] for col, name in zip(detail_cols, detail_names) if col in status_table})
     st.dataframe(detail_display, use_container_width=True, height=400)
-    
-    # Кнопка закрытия
     if st.button("✖️ Закрыть детали", use_container_width=True):
         st.session_state.selected_status = None
         st.rerun()
-    
     st.markdown("---")
 
-# ==================== ОБЩАЯ СТАТИСТИКА ЗА ПЕРИОД ====================
-st.markdown(f"## 📈 Общая статистика за выбранный период")
-
+# --- ОБЩАЯ СТАТИСТИКА ЗА ПЕРИОД ---
+st.markdown("## 📈 Общая статистика за выбранный период")
 col1, col2, col3, col4, col5 = st.columns(5)
-
-with col1:
-    st.metric("📦 Всего заказов", len(df_filtered))
-
-with col2:
-    total_items = int(df_filtered['кол-во штук в заказе'].sum())
-    st.metric("📦 Всего товаров", f"{total_items:,}".replace(',', ' '))
-
-with col3:
-    in_delivery = len(df_filtered[df_filtered['Статус отображение'] == "🚚 Доставляется"])
-    st.metric("🚚 В доставке", in_delivery)
-
-with col4:
-    delivered = len(df_filtered[df_filtered['Доставлен'] == "✅ Доставлен"])
-    st.metric("✅ Доставлено", delivered)
-
-with col5:
-    picking = len(df_filtered[df_filtered['Статус отображение'].isin(["⏳ Подбирается", "🔄 Сортируется", "📍 В очереди"])])
-    st.metric("⏳ В работе", picking)
-
+with col1: st.metric("📦 Всего заказов", len(df_filtered))
+with col2: st.metric("📦 Всего товаров", f"{int(df_filtered['кол-во штук в заказе'].sum()):,}".replace(',', ' '))
+with col3: st.metric("🚚 В доставке", len(df_filtered[df_filtered['Статус отображение'] == "🚚 Доставляется"]))
+with col4: st.metric("✅ Доставлено", len(df_filtered[df_filtered['Доставлен'] == "✅ Доставлен"]))
+with col5: st.metric("⏳ В работе", len(df_filtered[df_filtered['Статус отображение'].isin(["⏳ Подбирается", "🔄 Сортируется", "📍 В очереди"])]))
 st.markdown("---")
 
-# ==================== ДЕТАЛЬНАЯ ТАБЛИЦА ЗАКАЗОВ ====================
+# --- ДЕТАЛЬНАЯ ТАБЛИЦА ВСЕХ ЗАКАЗОВ ---
 st.markdown("## 📋 Все заказы")
-
-# Подготовка данных для таблицы
 df_table = df_filtered.copy()
 df_table['План отгрузки'] = df_table['План дата'].dt.strftime('%d.%m.%Y')
-df_table['Факт отгрузки'] = df_table['Дата факт отгрузки'].dt.strftime('%d.%m.%Y %H:%M') if 'Дата факт отгрузки' in df_table else "—"
-df_table['Факт отгрузки'] = df_table['Факт отгрузки'].fillna("—")
+df_table['Факт отгрузки'] = df_table['Дата факт отгрузки'].apply(lambda x: x.strftime('%d.%m.%Y') if pd.notna(x) else "—")
 df_table['Статус заказа'] = df_table['Статус отображение']
+display_cols = ['№ заказа', 'Название магазина', 'Город', 'кол-во штук в заказе', 'План отгрузки', 'Факт отгрузки', 'Статус заказа', 'Доставлен']
+display_names = ['№ заказа', 'Магазин', 'Город', 'Кол-во товаров', 'План отгрузки', 'Факт отгрузки', 'Статус WMS', 'Доставка']
+df_display = pd.DataFrame({name: df_table[col] for col, name in zip(display_cols, display_names) if col in df_table})
 
-# Выбираем колонки для отображения
-display_cols = ['№ заказа', 'Название магазина', 'Город', 'кол-во штук в заказе', 
-                'План отгрузки', 'Факт отгрузки', 'Статус заказа', 'Доставлен']
-
-display_names = ['№ заказа', 'Магазин', 'Город', 'Кол-во товаров', 
-                 'План отгрузки', 'Факт отгрузки', 'Статус WMS', 'Доставка']
-
-df_display = pd.DataFrame()
-for col, name in zip(display_cols, display_names):
-    if col in df_table.columns:
-        df_display[name] = df_table[col]
-
-# Поиск по заказам
 search = st.text_input("🔍 Поиск по номеру заказа", placeholder="Введите номер заказа...")
 if search:
     df_display = df_display[df_display['№ заказа'].astype(str).str.contains(search, case=False)]
-
-# Отображаем таблицу
 st.dataframe(df_display, use_container_width=True, height=500)
 
-# ==================== ЭКСПОРТ ДАННЫХ ====================
+# --- ЭКСПОРТ ---
 with st.expander("📥 Экспорт данных"):
-    csv_data = df_display.to_csv(index=False)
-    st.download_button(
-        label="📥 Скачать данные в CSV",
-        data=csv_data,
-        file_name=f"wms_orders_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv"
-    )
+    st.download_button("📥 Скачать данные в CSV", df_display.to_csv(index=False), f"wms_orders_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv")
 
-# Информация об обновлении
+# --- ИНФОРМАЦИЯ ОБ ОБНОВЛЕНИИ ---
 st.markdown("---")
 col_info1, col_info2, col_info3 = st.columns(3)
-with col_info1:
-    st.caption(f"🔄 Данные обновлены: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
-with col_info2:
-    st.caption(f"📅 Данные с 25 мая 2026")
-with col_info3:
-    if 'Название магазина' in df_filtered.columns:
-        st.caption(f"🏪 Магазинов: {df_filtered['Название магазина'].nunique()}")
+with col_info1: st.caption(f"🔄 Данные обновлены: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
+with col_info2: st.caption(f"📅 Данные с 25 мая 2026")
+with col_info3: st.caption(f"🏪 Магазинов: {df_filtered['Название магазина'].nunique()}")
